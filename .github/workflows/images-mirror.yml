@@ -118,7 +118,6 @@ jobs:
               echo "  Copying: ${TAG}..."
               if skopeo copy \
                 --multi-arch all \
-                --preserve-digests \
                 docker://${SOURCE_IMAGE}:${TAG} \
                 docker://${DEST_IMAGE}:${TAG} 2>&1; then
                 echo "Success: ${DEST_IMAGE}:${TAG}"
