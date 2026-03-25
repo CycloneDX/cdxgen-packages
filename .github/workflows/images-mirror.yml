@@ -114,7 +114,6 @@ jobs:
               echo "No tags found for: ${SOURCE_IMAGE}"
               continue
             fi
-            echo "Found tags: $(echo "$TAGS_ARRAY" | tr '\n' ' ')"
             for TAG in $TAGS_ARRAY; do
               echo "  Copying: ${TAG}..."
               if skopeo copy \
