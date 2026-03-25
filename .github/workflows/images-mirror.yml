@@ -1,0 +1,77 @@
+name: Mirror cdxgen Container Images
+
+on:
+  schedule:
+    - cron: '0 */12 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  mirror-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install Skopeo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+        shell: bash
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+      - name: Log in to the Container registry
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Discover and Mirror Images
+        env:
+          SOURCE_ORG: cdxgen
+          SOURCE_REPO: cdxgen
+          DEST_ORG: ${{ github.repository_owner }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          #!/bin/bash
+          set -e
+
+          RESPONSE=$(curl -s \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/orgs/cdxgen/packages?package_type=container&per_page=100")
+          IMAGE_NAMES=$(echo "$RESPONSE" | jq -r '.[].name' | grep "^cdxgen-" || true)
+          for IMAGE_NAME in "${IMAGE_NAMES[@]}"; do
+            echo "----------------------------------------"
+            echo "Processing: ${IMAGE_NAME}"
+            SOURCE_IMAGE="ghcr.io/${SOURCE_ORG}/${IMAGE_NAME}"
+            DEST_IMAGE="ghcr.io/${DEST_ORG}/${IMAGE_NAME}"
+            if ! TAGS=$(skopeo list-tags docker://${SOURCE_IMAGE} 2>/dev/null); then
+              echo "Image not found or not accessible: ${SOURCE_IMAGE}"
+              continue
+            fi
+            TAGS_ARRAY=$(echo "$TAGS" | jq -r '.Tags[]' 2>/dev/null || echo "")
+            if [ -z "$TAGS_ARRAY" ]; then
+              echo "No tags found for: ${SOURCE_IMAGE}"
+              continue
+            fi
+            echo "Found tags: $(echo "$TAGS_ARRAY" | tr '\n' ' ')"
+            for TAG in $TAGS_ARRAY; do
+              echo "  Copying: ${TAG}..."
+              if skopeo copy \
+                --multi-arch all \
+                --preserve-digests \
+                docker://${SOURCE_IMAGE}:${TAG} \
+                docker://${DEST_IMAGE}:${TAG} 2>&1; then
+                echo "Success: ${DEST_IMAGE}:${TAG}"
+              else
+                echo "Failed: ${DEST_IMAGE}:${TAG}"
+              fi
+            done
+            echo "----------------------------------------"
+          done
+        shell: bash
