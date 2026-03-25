@@ -34,7 +34,7 @@ jobs:
         env:
           SOURCE_ORG: cdxgen
           SOURCE_REPO: cdxgen
-          DEST_ORG: ${{ github.repository_owner }}
+          DEST_ORG: cyclonedx
         run: |
           #!/bin/bash
           set -e
