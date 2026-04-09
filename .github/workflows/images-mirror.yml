@@ -117,46 +117,84 @@ jobs:
         run: |
           SOURCE_IMAGE="ghcr.io/${SOURCE_ORG}/${IMAGE_NAME}"
           DEST_IMAGE="ghcr.io/${DEST_ORG}/${IMAGE_NAME}"
+
           echo "Processing: ${IMAGE_NAME}"
           echo "Source: ${SOURCE_IMAGE}"
           echo "Destination: ${DEST_IMAGE}"
+
           if ! TAGS_JSON=$(skopeo list-tags docker://${SOURCE_IMAGE} 2>/dev/null); then
             echo "Warning: Could not list tags for ${SOURCE_IMAGE}, skipping"
             exit 0
           fi
+
           mapfile -t ALL_TAGS < <(echo "$TAGS_JSON" | jq -r '.Tags[]' 2>/dev/null || true)
+
           if [ ${#ALL_TAGS[@]} -eq 0 ]; then
             echo "No tags found for ${SOURCE_IMAGE}, skipping"
             exit 0
           fi
-          LATEST_TAGS=()
-          SEMVER_TAGS=()
+
+          # Categorize tags
+          HAS_LATEST=false
+          STABLE_TAGS=()
+          PRERELEASE_TAGS=()
           OTHER_TAGS=()
+
           for tag in "${ALL_TAGS[@]}"; do
             if [ "$tag" = "latest" ]; then
-              LATEST_TAGS+=("$tag")
-            elif [[ "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.+]+)?$ ]]; then
-              SEMVER_TAGS+=("$tag")
+              HAS_LATEST=true
+            elif [[ "$tag" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              STABLE_TAGS+=("$tag")
+            elif [[ "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.+]+)$ ]]; then
+              PRERELEASE_TAGS+=("$tag")
             else
               OTHER_TAGS+=("$tag")
             fi
           done
+
           SELECTED_TAGS=()
-          for tag in "${LATEST_TAGS[@]}"; do
-            [ ${#SELECTED_TAGS[@]} -lt 5 ] && SELECTED_TAGS+=("$tag") && echo "Selected (priority 1): $tag"
-          done
-          if [ ${#SELECTED_TAGS[@]} -lt 5 ] && [ ${#SEMVER_TAGS[@]} -gt 0 ]; then
-            mapfile -t SORTED_SEMVER < <(printf '%s\n' "${SEMVER_TAGS[@]}" | sort -V)
-            for tag in "${SORTED_SEMVER[@]}"; do
-              [ ${#SELECTED_TAGS[@]} -lt 5 ] && SELECTED_TAGS+=("$tag") && echo "Selected (priority 2): $tag"
+
+          # Priority 1: Add 'latest' if present
+          if [ "$HAS_LATEST" = true ]; then
+            SELECTED_TAGS+=("latest")
+            echo "Selected (priority 1): latest"
+          fi
+
+          # Priority 2: Add stable semver tags (newest first)
+          if [ ${#SELECTED_TAGS[@]} -lt 5 ] && [ ${#STABLE_TAGS[@]} -gt 0 ]; then
+            mapfile -t SORTED_STABLE < <(printf '%s\n' "${STABLE_TAGS[@]}" | sort -V -r)
+            for tag in "${SORTED_STABLE[@]}"; do
+              if [ ${#SELECTED_TAGS[@]} -lt 5 ]; then
+                SELECTED_TAGS+=("$tag")
+                echo "Selected (priority 2): $tag"
+              fi
             done
           fi
+
+          # Priority 3: Add pre-release tags only if we still need more (newest first)
+          if [ ${#SELECTED_TAGS[@]} -lt 5 ] && [ ${#PRERELEASE_TAGS[@]} -gt 0 ]; then
+            mapfile -t SORTED_PRERELEASE < <(printf '%s\n' "${PRERELEASE_TAGS[@]}" | sort -V -r)
+            for tag in "${SORTED_PRERELEASE[@]}"; do
+              if [ ${#SELECTED_TAGS[@]} -lt 5 ]; then
+                SELECTED_TAGS+=("$tag")
+                echo "Selected (priority 3): $tag"
+              fi
+            done
+          fi
+
+          # Priority 4: Fill remaining with other tags alphabetically
           if [ ${#SELECTED_TAGS[@]} -lt 5 ] && [ ${#OTHER_TAGS[@]} -gt 0 ]; then
             mapfile -t SORTED_OTHER < <(printf '%s\n' "${OTHER_TAGS[@]}" | sort)
             for tag in "${SORTED_OTHER[@]}"; do
-              [ ${#SELECTED_TAGS[@]} -lt 5 ] && SELECTED_TAGS+=("$tag") && echo "Selected (priority 3): $tag"
+              if [ ${#SELECTED_TAGS[@]} -lt 5 ]; then
+                SELECTED_TAGS+=("$tag")
+                echo "Selected (priority 4): $tag"
+              fi
             done
           fi
+
+          echo "Will mirror ${#SELECTED_TAGS[@]} tags: ${SELECTED_TAGS[*]}"
+
           for TAG in "${SELECTED_TAGS[@]}"; do
             echo "Copying ${SOURCE_IMAGE}:${TAG} to ${DEST_IMAGE}:${TAG}"
             if skopeo copy \
@@ -169,5 +207,6 @@ jobs:
               echo "Failed: ${DEST_IMAGE}:${TAG}"
             fi
           done
+
           echo "Completed processing: ${IMAGE_NAME}"
         shell: bash
