@@ -115,7 +115,6 @@ jobs:
           DEST_ORG: cyclonedx
           IMAGE_NAME: ${{ matrix.image-name }}
         run: |
-          #!/bin/bash
           SOURCE_IMAGE="ghcr.io/${SOURCE_ORG}/${IMAGE_NAME}"
           DEST_IMAGE="ghcr.io/${DEST_ORG}/${IMAGE_NAME}"
           echo "Processing: ${IMAGE_NAME}"
@@ -165,6 +164,7 @@ jobs:
               --retry-times 3 \
               docker://${SOURCE_IMAGE}:${TAG} \
               docker://${DEST_IMAGE}:${TAG}; then
+              echo "Success: ${DEST_IMAGE}:${TAG}"
             else
               echo "Failed: ${DEST_IMAGE}:${TAG}"
             fi
