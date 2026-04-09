@@ -12,123 +12,162 @@ permissions:
 jobs:
   mirror-images:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      max-parallel: 10
+      fail-fast: false
+      matrix:
+        image-name: [
+          "cdxgen",
+          "cdxgen-java",
+          "cdxgen-java-slim",
+          "cdxgen-java11",
+          "cdxgen-java11-slim",
+          "cdxgen-python39",
+          "cdxgen-deno",
+          "cdxgen-bun",
+          "cdxgen-secure",
+          "cdxgen-ppc64",
+          "cdxgen-java17",
+          "cdxgen-java17-slim",
+          "cdxgen-python313",
+          "cdxgen-python311",
+          "cdxgen-python312",
+          "cdxgen-python310",
+          "cdxgen-python",
+          "cdxgen-python36",
+          "cdxgen-dotnet6",
+          "cdxgen-dotnet7",
+          "cdxgen-dotnet8",
+          "cdxgen-dotnet9",
+          "cdxgen-golang",
+          "cdxgen-node",
+          "cdxgen-node20",
+          "cdxgen-ruby25",
+          "cdxgen-ubuntu-dotnet10",
+          "cdxgen-debian-dotnet8",
+          "cdxgen-opensuse-python39",
+          "cdxgen-debian-ruby26",
+          "cdxgen-debian-ruby33",
+          "cdxgen-debian-ruby34",
+          "cdxgen-debian-ruby4",
+          "cdxgen-debian-rust",
+          "cdxgen-debian-rust1",
+          "cdxgen-debian-swift",
+          "cdxgen-debian-swift6",
+          "cdxgen-temurin-java21",
+          "cdxgen-temurin-java24",
+          "cdxgen-temurin-java26",
+          "cdxgen-temurin-java8",
+          "cdxgen-alpine-php84",
+          "cdxgen-alpine-php85",
+          "cdxgen-alpine-python313",
+          "cdxgen-alpine-rust1",
+          "cdxgen-alpine-dotnet9",
+          "cdxgen-alpine-dotnet10",
+          "cdxgen-alpine-golang124",
+          "cdxgen-alpine-golang126",
+          "cdxgen-alpine-node20",
+          "cdxgen-debian-php83",
+          "cdxgen-debian-php84",
+          "cdxgen-debian-php85",
+          "cdxgen-alpine-golang123",
+          "cdxgen-alpine-golang",
+          "cdxgen-alpine-ruby34",
+          "cdxgen-alpine-ruby4",
+          "cdxgen-alpine-node24",
+          "cdxgen-alpine-java24",
+          "cdxgen-alpine-java26",
+          "cdxgen-debian-golang124",
+          "cdxgen-alpine-java21",
+          "cdxgen-debian-golang123",
+          "cdxgen-debian-golang",
+          "cdxgen-debian-dotnet6",
+          "cdxgen-debian-dotnet9",
+          "cdxgen-debian-dotnet10",
+          "cdxgen-opensuse-python310",
+          "cdxgen-opensuse-rolling"
+        ]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-      - name: Install Skopeo
+
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y skopeo
+          sudo apt-get install -y skopeo jq
         shell: bash
+
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a
+
       - name: Log in to the Container registry
-        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Discover and Mirror Images
+      - name: Mirror Image Tags (max 5 per image)
         env:
           SOURCE_ORG: cdxgen
-          SOURCE_REPO: cdxgen
           DEST_ORG: cyclonedx
+          IMAGE_NAME: ${{ matrix.image-name }}
         run: |
           #!/bin/bash
-          set -e
-
-          IMAGE_NAMES=(
-            "cdxgen"
-            "cdxgen-java"
-            "cdxgen-java-slim"
-            "cdxgen-java11"
-            "cdxgen-java11-slim"
-            "cdxgen-python39"
-            "cdxgen-deno"
-            "cdxgen-bun"
-            "cdxgen-secure"
-            "cdxgen-ppc64"
-            "cdxgen-java17"
-            "cdxgen-java17-slim"
-            "cdxgen-python313"
-            "cdxgen-python311"
-            "cdxgen-python312"
-            "cdxgen-python310"
-            "cdxgen-python"
-            "cdxgen-python36"
-            "cdxgen-dotnet6"
-            "cdxgen-dotnet7"
-            "cdxgen-dotnet8"
-            "cdxgen-dotnet9"
-            "cdxgen-golang"
-            "cdxgen-node"
-            "cdxgen-node20"
-            "cdxgen-ruby25"
-            "cdxgen-ubuntu-dotnet10"
-            "cdxgen-debian-dotnet8"
-            "cdxgen-opensuse-python39"
-            "cdxgen-debian-ruby26"
-            "cdxgen-debian-ruby33"
-            "cdxgen-debian-ruby34"
-            "cdxgen-debian-rust"
-            "cdxgen-debian-rust1"
-            "cdxgen-debian-swift"
-            "cdxgen-debian-swift6"
-            "cdxgen-temurin-java21"
-            "cdxgen-temurin-java24"
-            "cdxgen-temurin-java8"
-            "cdxgen-alpine-php84"
-            "cdxgen-alpine-python313"
-            "cdxgen-alpine-rust1"
-            "cdxgen-alpine-dotnet9"
-            "cdxgen-alpine-golang124"
-            "cdxgen-alpine-node20"
-            "cdxgen-debian-php83"
-            "cdxgen-debian-php84"
-            "cdxgen-alpine-golang123"
-            "cdxgen-alpine-golang"
-            "cdxgen-alpine-ruby34"
-            "cdxgen-alpine-ruby344"
-            "cdxgen-alpine-ruby345"
-            "cdxgen-alpine-node24"
-            "cdxgen-alpine-java24"
-            "cdxgen-debian-golang124"
-            "cdxgen-alpine-java21"
-            "cdxgen-debian-golang123"
-            "cdxgen-debian-golang"
-            "cdxgen-debian-dotnet6"
-            "cdxgen-debian-dotnet9"
-            "cdxgen-debian-dotnet10"
-            "cdxgen-opensuse-python310"
-            "cdxgen-opensuse-rolling"
-          )
-          for IMAGE_NAME in "${IMAGE_NAMES[@]}"; do
-            echo "----------------------------------------"
-            echo "Processing: ${IMAGE_NAME}"
-            SOURCE_IMAGE="ghcr.io/${SOURCE_ORG}/${IMAGE_NAME}"
-            DEST_IMAGE="ghcr.io/${DEST_ORG}/${IMAGE_NAME}"
-            if ! TAGS=$(skopeo list-tags docker://${SOURCE_IMAGE} 2>/dev/null); then
-              echo "Image not found or not accessible: ${SOURCE_IMAGE}"
-              continue
+          SOURCE_IMAGE="ghcr.io/${SOURCE_ORG}/${IMAGE_NAME}"
+          DEST_IMAGE="ghcr.io/${DEST_ORG}/${IMAGE_NAME}"
+          echo "Processing: ${IMAGE_NAME}"
+          echo "Source: ${SOURCE_IMAGE}"
+          echo "Destination: ${DEST_IMAGE}"
+          if ! TAGS_JSON=$(skopeo list-tags docker://${SOURCE_IMAGE} 2>/dev/null); then
+            echo "Warning: Could not list tags for ${SOURCE_IMAGE}, skipping"
+            exit 0
+          fi
+          mapfile -t ALL_TAGS < <(echo "$TAGS_JSON" | jq -r '.Tags[]' 2>/dev/null || true)
+          if [ ${#ALL_TAGS[@]} -eq 0 ]; then
+            echo "No tags found for ${SOURCE_IMAGE}, skipping"
+            exit 0
+          fi
+          LATEST_TAGS=()
+          SEMVER_TAGS=()
+          OTHER_TAGS=()
+          for tag in "${ALL_TAGS[@]}"; do
+            if [ "$tag" = "latest" ]; then
+              LATEST_TAGS+=("$tag")
+            elif [[ "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.+]+)?$ ]]; then
+              SEMVER_TAGS+=("$tag")
+            else
+              OTHER_TAGS+=("$tag")
             fi
-            TAGS_ARRAY=$(echo "$TAGS" | jq -r '.Tags[]' 2>/dev/null || echo "")
-            if [ -z "$TAGS_ARRAY" ]; then
-              echo "No tags found for: ${SOURCE_IMAGE}"
-              continue
-            fi
-            for TAG in $TAGS_ARRAY; do
-              echo "  Copying: ${TAG}..."
-              if skopeo copy \
-                --multi-arch all \
-                docker://${SOURCE_IMAGE}:${TAG} \
-                docker://${DEST_IMAGE}:${TAG} 2>&1; then
-                echo "Success: ${DEST_IMAGE}:${TAG}"
-              else
-                echo "Failed: ${DEST_IMAGE}:${TAG}"
-              fi
-            done
-            echo "----------------------------------------"
           done
+          SELECTED_TAGS=()
+          for tag in "${LATEST_TAGS[@]}"; do
+            [ ${#SELECTED_TAGS[@]} -lt 5 ] && SELECTED_TAGS+=("$tag") && echo "Selected (priority 1): $tag"
+          done
+          if [ ${#SELECTED_TAGS[@]} -lt 5 ] && [ ${#SEMVER_TAGS[@]} -gt 0 ]; then
+            mapfile -t SORTED_SEMVER < <(printf '%s\n' "${SEMVER_TAGS[@]}" | sort -V)
+            for tag in "${SORTED_SEMVER[@]}"; do
+              [ ${#SELECTED_TAGS[@]} -lt 5 ] && SELECTED_TAGS+=("$tag") && echo "Selected (priority 2): $tag"
+            done
+          fi
+          if [ ${#SELECTED_TAGS[@]} -lt 5 ] && [ ${#OTHER_TAGS[@]} -gt 0 ]; then
+            mapfile -t SORTED_OTHER < <(printf '%s\n' "${OTHER_TAGS[@]}" | sort)
+            for tag in "${SORTED_OTHER[@]}"; do
+              [ ${#SELECTED_TAGS[@]} -lt 5 ] && SELECTED_TAGS+=("$tag") && echo "Selected (priority 3): $tag"
+            done
+          fi
+          for TAG in "${SELECTED_TAGS[@]}"; do
+            echo "Copying ${SOURCE_IMAGE}:${TAG} to ${DEST_IMAGE}:${TAG}"
+            if skopeo copy \
+              --multi-arch all \
+              --retry-times 3 \
+              docker://${SOURCE_IMAGE}:${TAG} \
+              docker://${DEST_IMAGE}:${TAG}; then
+            else
+              echo "Failed: ${DEST_IMAGE}:${TAG}"
+            fi
+          done
+          echo "Completed processing: ${IMAGE_NAME}"
         shell: bash
