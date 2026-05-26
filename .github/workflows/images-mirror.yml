@@ -10,84 +10,68 @@ permissions:
   packages: write
 
 jobs:
+  discover-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      image_names: ${{ steps.discover.outputs.image_names }}
+      image_count: ${{ steps.discover.outputs.image_count }}
+    steps:
+      - name: Discover cdxgen* container images
+        id: discover
+        env:
+          SOURCE_ORG: cdxgen
+          IMAGE_NAME_PATTERN: ^cdxgen
+          MAX_PAGES: 20
+        run: |
+          set -euo pipefail
+
+          images_file="$(mktemp)"
+          trap 'rm -f "${images_file}"' EXIT
+
+          for page in $(seq 1 "${MAX_PAGES}"); do
+            url="https://github.com/orgs/${SOURCE_ORG}/packages?ecosystem=container&page=${page}"
+            echo "Discovering container packages from ${url}"
+
+            html="$(curl -fsSL --retry 3 --retry-delay 2 "${url}")"
+            page_names="$(printf '%s' "${html}" \
+              | grep -Eo "/orgs/${SOURCE_ORG}/packages/container/package/[^\"?#< ]+" \
+              | sed 's#.*/package/##' \
+              | sort -u || true)"
+
+            if [ -z "${page_names}" ]; then
+              echo "No package links found on page ${page}; stopping discovery."
+              break
+            fi
+
+            printf '%s\n' "${page_names}" | grep -E "${IMAGE_NAME_PATTERN}" >> "${images_file}" || true
+          done
+
+          if [ ! -s "${images_file}" ]; then
+            echo "No cdxgen* container packages were discovered." >&2
+            exit 1
+          fi
+
+          mapfile -t image_names < <(sort -u "${images_file}")
+          image_json="$(printf '%s\n' "${image_names[@]}" \
+            | python3 -c 'import json, sys; print(json.dumps([line.strip() for line in sys.stdin if line.strip()]))')"
+
+          echo "Discovered ${#image_names[@]} image(s):"
+          printf '  - %s\n' "${image_names[@]}"
+
+          echo "image_names=${image_json}" >> "${GITHUB_OUTPUT}"
+          echo "image_count=${#image_names[@]}" >> "${GITHUB_OUTPUT}"
+        shell: bash
+
   mirror-images:
+    needs: discover-images
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
       max-parallel: 10
       fail-fast: false
       matrix:
-        image-name: [
-          "cdxgen",
-          "cdxgen-java",
-          "cdxgen-java-slim",
-          "cdxgen-java11",
-          "cdxgen-java11-slim",
-          "cdxgen-python39",
-          "cdxgen-deno",
-          "cdxgen-bun",
-          "cdxgen-secure",
-          "cdxgen-ppc64",
-          "cdxgen-java17",
-          "cdxgen-java17-slim",
-          "cdxgen-python313",
-          "cdxgen-python311",
-          "cdxgen-python312",
-          "cdxgen-python310",
-          "cdxgen-python",
-          "cdxgen-python36",
-          "cdxgen-dotnet6",
-          "cdxgen-dotnet7",
-          "cdxgen-dotnet8",
-          "cdxgen-dotnet9",
-          "cdxgen-golang",
-          "cdxgen-node",
-          "cdxgen-node20",
-          "cdxgen-ruby25",
-          "cdxgen-ubuntu-dotnet10",
-          "cdxgen-debian-dotnet8",
-          "cdxgen-opensuse-python39",
-          "cdxgen-debian-ruby26",
-          "cdxgen-debian-ruby33",
-          "cdxgen-debian-ruby34",
-          "cdxgen-debian-ruby4",
-          "cdxgen-debian-rust",
-          "cdxgen-debian-rust1",
-          "cdxgen-debian-swift",
-          "cdxgen-debian-swift6",
-          "cdxgen-temurin-java21",
-          "cdxgen-temurin-java24",
-          "cdxgen-temurin-java26",
-          "cdxgen-temurin-java8",
-          "cdxgen-alpine-php84",
-          "cdxgen-alpine-php85",
-          "cdxgen-alpine-python313",
-          "cdxgen-alpine-rust1",
-          "cdxgen-alpine-dotnet9",
-          "cdxgen-alpine-dotnet10",
-          "cdxgen-alpine-golang124",
-          "cdxgen-alpine-golang126",
-          "cdxgen-alpine-node20",
-          "cdxgen-debian-php83",
-          "cdxgen-debian-php84",
-          "cdxgen-debian-php85",
-          "cdxgen-alpine-golang123",
-          "cdxgen-alpine-golang",
-          "cdxgen-alpine-ruby34",
-          "cdxgen-alpine-ruby4",
-          "cdxgen-alpine-node24",
-          "cdxgen-alpine-java24",
-          "cdxgen-alpine-java26",
-          "cdxgen-debian-golang124",
-          "cdxgen-alpine-java21",
-          "cdxgen-debian-golang123",
-          "cdxgen-debian-golang",
-          "cdxgen-debian-dotnet6",
-          "cdxgen-debian-dotnet9",
-          "cdxgen-debian-dotnet10",
-          "cdxgen-opensuse-python310",
-          "cdxgen-opensuse-rolling"
-        ]
+        image-name: ${{ fromJson(needs.discover-images.outputs.image_names) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -122,14 +106,14 @@ jobs:
           echo "Source: ${SOURCE_IMAGE}"
           echo "Destination: ${DEST_IMAGE}"
 
-          if ! TAGS_JSON=$(skopeo list-tags docker://${SOURCE_IMAGE} 2>/dev/null); then
+          if ! TAGS_JSON=$(skopeo list-tags "docker://${SOURCE_IMAGE}" 2>/dev/null); then
             echo "Warning: Could not list tags for ${SOURCE_IMAGE}, skipping"
             exit 0
           fi
 
-          mapfile -t ALL_TAGS < <(echo "$TAGS_JSON" | jq -r '.Tags[]' 2>/dev/null || true)
+          mapfile -t ALL_TAGS < <(printf '%s\n' "${TAGS_JSON}" | jq -r '.Tags[]' 2>/dev/null || true)
 
-          if [ ${#ALL_TAGS[@]} -eq 0 ]; then
+          if [ "${#ALL_TAGS[@]}" -eq 0 ]; then
             echo "No tags found for ${SOURCE_IMAGE}, skipping"
             exit 0
           fi
@@ -161,10 +145,10 @@ jobs:
           fi
 
           # Priority 2: Add stable semver tags (newest first)
-          if [ ${#SELECTED_TAGS[@]} -lt 5 ] && [ ${#STABLE_TAGS[@]} -gt 0 ]; then
+          if [ "${#SELECTED_TAGS[@]}" -lt 5 ] && [ "${#STABLE_TAGS[@]}" -gt 0 ]; then
             mapfile -t SORTED_STABLE < <(printf '%s\n' "${STABLE_TAGS[@]}" | sort -V -r)
             for tag in "${SORTED_STABLE[@]}"; do
-              if [ ${#SELECTED_TAGS[@]} -lt 5 ]; then
+              if [ "${#SELECTED_TAGS[@]}" -lt 5 ]; then
                 SELECTED_TAGS+=("$tag")
                 echo "Selected (priority 2): $tag"
               fi
@@ -172,10 +156,10 @@ jobs:
           fi
 
           # Priority 3: Add pre-release tags only if we still need more (newest first)
-          if [ ${#SELECTED_TAGS[@]} -lt 5 ] && [ ${#PRERELEASE_TAGS[@]} -gt 0 ]; then
+          if [ "${#SELECTED_TAGS[@]}" -lt 5 ] && [ "${#PRERELEASE_TAGS[@]}" -gt 0 ]; then
             mapfile -t SORTED_PRERELEASE < <(printf '%s\n' "${PRERELEASE_TAGS[@]}" | sort -V -r)
             for tag in "${SORTED_PRERELEASE[@]}"; do
-              if [ ${#SELECTED_TAGS[@]} -lt 5 ]; then
+              if [ "${#SELECTED_TAGS[@]}" -lt 5 ]; then
                 SELECTED_TAGS+=("$tag")
                 echo "Selected (priority 3): $tag"
               fi
@@ -183,10 +167,10 @@ jobs:
           fi
 
           # Priority 4: Fill remaining with other tags alphabetically
-          if [ ${#SELECTED_TAGS[@]} -lt 5 ] && [ ${#OTHER_TAGS[@]} -gt 0 ]; then
+          if [ "${#SELECTED_TAGS[@]}" -lt 5 ] && [ "${#OTHER_TAGS[@]}" -gt 0 ]; then
             mapfile -t SORTED_OTHER < <(printf '%s\n' "${OTHER_TAGS[@]}" | sort)
             for tag in "${SORTED_OTHER[@]}"; do
-              if [ ${#SELECTED_TAGS[@]} -lt 5 ]; then
+              if [ "${#SELECTED_TAGS[@]}" -lt 5 ]; then
                 SELECTED_TAGS+=("$tag")
                 echo "Selected (priority 4): $tag"
               fi
@@ -200,8 +184,8 @@ jobs:
             if skopeo copy \
               --multi-arch all \
               --retry-times 3 \
-              docker://${SOURCE_IMAGE}:${TAG} \
-              docker://${DEST_IMAGE}:${TAG}; then
+              "docker://${SOURCE_IMAGE}:${TAG}" \
+              "docker://${DEST_IMAGE}:${TAG}"; then
               echo "Success: ${DEST_IMAGE}:${TAG}"
             else
               echo "Failed: ${DEST_IMAGE}:${TAG}"
