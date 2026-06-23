@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: '0 */12 * * *'
   workflow_dispatch:
+    inputs:
+      versions:
+        description: 'Comma-separated version or single version (e.g., 12.0.0 or 12.0.0,12.0.1,latest) to mirror'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -98,6 +104,7 @@ jobs:
           SOURCE_ORG: cdxgen
           DEST_ORG: cyclonedx
           IMAGE_NAME: ${{ matrix.image-name }}
+          INPUT_VERSIONS: ${{ github.event.inputs.versions || inputs.versions || '' }}
         run: |
           SOURCE_IMAGE="ghcr.io/${SOURCE_ORG}/${IMAGE_NAME}"
           DEST_IMAGE="ghcr.io/${DEST_ORG}/${IMAGE_NAME}"
@@ -138,43 +145,151 @@ jobs:
 
           SELECTED_TAGS=()
 
-          # Priority 1: Add 'latest' if present
-          if [ "$HAS_LATEST" = true ]; then
-            SELECTED_TAGS+=("latest")
-            echo "Selected (priority 1): latest"
-          fi
-
-          # Priority 2: Add stable semver tags (newest first)
-          if [ "${#SELECTED_TAGS[@]}" -lt 5 ] && [ "${#STABLE_TAGS[@]}" -gt 0 ]; then
-            mapfile -t SORTED_STABLE < <(printf '%s\n' "${STABLE_TAGS[@]}" | sort -V -r)
-            for tag in "${SORTED_STABLE[@]}"; do
-              if [ "${#SELECTED_TAGS[@]}" -lt 5 ]; then
-                SELECTED_TAGS+=("$tag")
-                echo "Selected (priority 2): $tag"
+          if [ -n "${INPUT_VERSIONS:-}" ]; then
+            echo "User requested specific versions: ${INPUT_VERSIONS}"
+            IFS=',' read -ra ADDR <<< "${INPUT_VERSIONS}"
+            for val in "${ADDR[@]}"; do
+              # trim spaces
+              val=$(echo "${val}" | xargs)
+              if [ -n "${val}" ]; then
+                MATCHED_TAG=""
+                
+                # Check for exact match first
+                for tag in "${ALL_TAGS[@]}"; do
+                  if [ "${tag}" = "${val}" ]; then
+                    MATCHED_TAG="${tag}"
+                    break
+                  fi
+                done
+                
+                # If not matched, try with/without 'v' prefix
+                if [ -z "${MATCHED_TAG}" ]; then
+                  if [[ "${val}" =~ ^v(.+)$ ]]; then
+                    no_v="${BASH_REMATCH[1]}"
+                    for tag in "${ALL_TAGS[@]}"; do
+                      if [ "${tag}" = "${no_v}" ]; then
+                        MATCHED_TAG="${tag}"
+                        break
+                      fi
+                    done
+                  else
+                    with_v="v${val}"
+                    for tag in "${ALL_TAGS[@]}"; do
+                      if [ "${tag}" = "${with_v}" ]; then
+                        MATCHED_TAG="${tag}"
+                        break
+                      fi
+                    done
+                  fi
+                fi
+                
+                if [ -n "${MATCHED_TAG}" ]; then
+                  # Check if already added
+                  ALREADY_ADDED=false
+                  for sel in "${SELECTED_TAGS[@]}"; do
+                    if [ "${sel}" = "${MATCHED_TAG}" ]; then
+                      ALREADY_ADDED=true
+                      break
+                    fi
+                  done
+                  if [ "${ALREADY_ADDED}" = false ]; then
+                    SELECTED_TAGS+=("${MATCHED_TAG}")
+                    echo "Selected (from input): ${MATCHED_TAG}"
+                  fi
+                else
+                  echo "Warning: Tag/version '${val}' (or its variations) does not exist in source repository, skipping"
+                fi
               fi
             done
+          else
+            # Priority 1: Add 'latest' if present
+            if [ "$HAS_LATEST" = true ]; then
+              SELECTED_TAGS+=("latest")
+              echo "Selected (priority 1): latest"
+            fi
+
+            # Priority 2: Add stable semver tags (newest first)
+            if [ "${#SELECTED_TAGS[@]}" -lt 5 ] && [ "${#STABLE_TAGS[@]}" -gt 0 ]; then
+              mapfile -t SORTED_STABLE < <(printf '%s\n' "${STABLE_TAGS[@]}" | sort -V -r)
+              for tag in "${SORTED_STABLE[@]}"; do
+                if [ "${#SELECTED_TAGS[@]}" -lt 5 ]; then
+                  SELECTED_TAGS+=("$tag")
+                  echo "Selected (priority 2): $tag"
+                fi
+              done
+            fi
+
+            # Priority 3: Add pre-release tags only if we still need more (newest first)
+            if [ "${#SELECTED_TAGS[@]}" -lt 5 ] && [ "${#PRERELEASE_TAGS[@]}" -gt 0 ]; then
+              mapfile -t SORTED_PRERELEASE < <(printf '%s\n' "${PRERELEASE_TAGS[@]}" | sort -V -r)
+              for tag in "${SORTED_PRERELEASE[@]}"; do
+                if [ "${#SELECTED_TAGS[@]}" -lt 5 ]; then
+                  SELECTED_TAGS+=("$tag")
+                  echo "Selected (priority 3): $tag"
+                fi
+              done
+            fi
+
+            # Priority 4: Fill remaining with other tags alphabetically
+            if [ "${#SELECTED_TAGS[@]}" -lt 5 ] && [ "${#OTHER_TAGS[@]}" -gt 0 ]; then
+              mapfile -t SORTED_OTHER < <(printf '%s\n' "${OTHER_TAGS[@]}" | sort)
+              for tag in "${SORTED_OTHER[@]}"; do
+                if [ "${#SELECTED_TAGS[@]}" -lt 5 ]; then
+                  SELECTED_TAGS+=("$tag")
+                  echo "Selected (priority 4): $tag"
+                fi
+              done
+            fi
           fi
 
-          # Priority 3: Add pre-release tags only if we still need more (newest first)
-          if [ "${#SELECTED_TAGS[@]}" -lt 5 ] && [ "${#PRERELEASE_TAGS[@]}" -gt 0 ]; then
-            mapfile -t SORTED_PRERELEASE < <(printf '%s\n' "${PRERELEASE_TAGS[@]}" | sort -V -r)
-            for tag in "${SORTED_PRERELEASE[@]}"; do
-              if [ "${#SELECTED_TAGS[@]}" -lt 5 ]; then
-                SELECTED_TAGS+=("$tag")
-                echo "Selected (priority 3): $tag"
+          # Automatically find and append matching rolling major/minor tags (like v12 or 12.6) if they exist
+          DERIVED_TAGS=()
+          for tag in ${SELECTED_TAGS[@]+"${SELECTED_TAGS[@]}"}; do
+            if [[ "$tag" =~ ^(v?)([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              prefix="${BASH_REMATCH[1]}"
+              major="${BASH_REMATCH[2]}"
+              minor="${BASH_REMATCH[3]}"
+              
+              candidates=(
+                "${prefix}${major}"
+                "${prefix}${major}.${minor}"
+              )
+              
+              if [ "$prefix" = "v" ]; then
+                candidates+=(
+                  "${major}"
+                  "${major}.${minor}"
+                )
+              else
+                candidates+=(
+                  "v${major}"
+                  "v${major}.${minor}"
+                )
               fi
-            done
-          fi
-
-          # Priority 4: Fill remaining with other tags alphabetically
-          if [ "${#SELECTED_TAGS[@]}" -lt 5 ] && [ "${#OTHER_TAGS[@]}" -gt 0 ]; then
-            mapfile -t SORTED_OTHER < <(printf '%s\n' "${OTHER_TAGS[@]}" | sort)
-            for tag in "${SORTED_OTHER[@]}"; do
-              if [ "${#SELECTED_TAGS[@]}" -lt 5 ]; then
-                SELECTED_TAGS+=("$tag")
-                echo "Selected (priority 4): $tag"
-              fi
-            done
+              
+              for candidate in "${candidates[@]}"; do
+                for t in "${ALL_TAGS[@]}"; do
+                  if [ "$t" = "$candidate" ]; then
+                    ALREADY_SELECTED=false
+                    for s in ${SELECTED_TAGS[@]+"${SELECTED_TAGS[@]}"} ${DERIVED_TAGS[@]+"${DERIVED_TAGS[@]}"}; do
+                      if [ "$s" = "$candidate" ]; then
+                        ALREADY_SELECTED=true
+                        break
+                      fi
+                    done
+                    if [ "$ALREADY_SELECTED" = false ]; then
+                      DERIVED_TAGS+=("$candidate")
+                      echo "Automatically selected associated rolling tag: $candidate"
+                    fi
+                    break
+                  fi
+                done
+              done
+            fi
+          done
+          
+          if [ "${#DERIVED_TAGS[@]}" -gt 0 ]; then
+            SELECTED_TAGS+=("${DERIVED_TAGS[@]}")
           fi
 
           echo "Will mirror ${#SELECTED_TAGS[@]} tags: ${SELECTED_TAGS[*]}"
