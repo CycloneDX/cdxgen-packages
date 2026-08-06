@@ -1,0 +1,4 @@
+sha256-abc
+feature-x
+13.0.0-amd64
+master-nydus

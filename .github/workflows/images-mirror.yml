@@ -6,10 +6,25 @@ on:
   workflow_dispatch:
     inputs:
       versions:
-        description: 'Comma-separated version or single version (e.g., 12.0.0 or 12.0.0,12.0.1,latest) to mirror'
+        description: 'Comma-separated tags to mirror instead of the default selection (e.g. 13.0.0 or 13.0.0,v13,latest)'
         required: false
         type: string
         default: ''
+      rolling_majors:
+        description: 'Major series whose rolling tags (v13, v13.0, ...) are always mirrored'
+        required: false
+        type: string
+        default: 'v12,v13'
+      mirror_master:
+        description: 'Also mirror the master tag'
+        required: false
+        type: boolean
+        default: true
+      dry_run:
+        description: 'List what would be copied without copying it'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -79,7 +94,7 @@ jobs:
       matrix:
         image-name: ${{ fromJson(needs.discover-images.outputs.image_names) }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
@@ -90,222 +105,86 @@ jobs:
         shell: bash
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4.2.0
 
       - name: Log in to the Container registry
-        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Mirror Image Tags (max 5 per image)
+      - name: Mirror image tags
         env:
           SOURCE_ORG: cdxgen
           DEST_ORG: cyclonedx
           IMAGE_NAME: ${{ matrix.image-name }}
-          INPUT_VERSIONS: ${{ github.event.inputs.versions || inputs.versions || '' }}
+          INPUT_VERSIONS: ${{ github.event.inputs.versions || '' }}
+          ROLLING_MAJORS: ${{ github.event.inputs.rolling_majors || 'v12,v13' }}
+          MIRROR_MASTER: ${{ github.event.inputs.mirror_master || 'true' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
+          set -euo pipefail
+
           SOURCE_IMAGE="ghcr.io/${SOURCE_ORG}/${IMAGE_NAME}"
           DEST_IMAGE="ghcr.io/${DEST_ORG}/${IMAGE_NAME}"
 
-          echo "Processing: ${IMAGE_NAME}"
-          echo "Source: ${SOURCE_IMAGE}"
+          echo "Source:      ${SOURCE_IMAGE}"
           echo "Destination: ${DEST_IMAGE}"
 
-          if ! TAGS_JSON=$(skopeo list-tags "docker://${SOURCE_IMAGE}" 2>/dev/null); then
-            echo "Warning: Could not list tags for ${SOURCE_IMAGE}, skipping"
+          if ! TAGS_JSON="$(skopeo list-tags "docker://${SOURCE_IMAGE}" 2>/dev/null)"; then
+            echo "Could not list tags for ${SOURCE_IMAGE}; skipping."
             exit 0
           fi
 
-          mapfile -t ALL_TAGS < <(printf '%s\n' "${TAGS_JSON}" | jq -r '.Tags[]' 2>/dev/null || true)
+          mapfile -t SELECTED_TAGS < <(
+            printf '%s' "${TAGS_JSON}" \
+              | jq -r '.Tags[]' \
+              | ./scripts/select-tags.sh
+          )
 
-          if [ "${#ALL_TAGS[@]}" -eq 0 ]; then
-            echo "No tags found for ${SOURCE_IMAGE}, skipping"
+          if [ "${#SELECTED_TAGS[@]}" -eq 0 ]; then
+            echo "No mirrorable tags for ${SOURCE_IMAGE}; skipping."
             exit 0
           fi
 
-          # Categorize tags
-          HAS_LATEST=false
-          STABLE_TAGS=()
-          PRERELEASE_TAGS=()
-          OTHER_TAGS=()
+          echo "Mirroring ${#SELECTED_TAGS[@]} tag(s): ${SELECTED_TAGS[*]}"
 
-          for tag in "${ALL_TAGS[@]}"; do
-            if [ "$tag" = "latest" ]; then
-              HAS_LATEST=true
-            elif [[ "$tag" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-              STABLE_TAGS+=("$tag")
-            elif [[ "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.+]+)$ ]]; then
-              PRERELEASE_TAGS+=("$tag")
-            else
-              OTHER_TAGS+=("$tag")
-            fi
-          done
+          {
+            echo "### ${IMAGE_NAME}"
+            echo
+            echo "| tag | result |"
+            echo "| --- | ------ |"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
-          SELECTED_TAGS=()
-
-          if [ -n "${INPUT_VERSIONS:-}" ]; then
-            echo "User requested specific versions: ${INPUT_VERSIONS}"
-            IFS=',' read -ra ADDR <<< "${INPUT_VERSIONS}"
-            for val in "${ADDR[@]}"; do
-              # trim spaces
-              val=$(echo "${val}" | xargs)
-              if [ -n "${val}" ]; then
-                MATCHED_TAG=""
-                
-                # Check for exact match first
-                for tag in "${ALL_TAGS[@]}"; do
-                  if [ "${tag}" = "${val}" ]; then
-                    MATCHED_TAG="${tag}"
-                    break
-                  fi
-                done
-                
-                # If not matched, try with/without 'v' prefix
-                if [ -z "${MATCHED_TAG}" ]; then
-                  if [[ "${val}" =~ ^v(.+)$ ]]; then
-                    no_v="${BASH_REMATCH[1]}"
-                    for tag in "${ALL_TAGS[@]}"; do
-                      if [ "${tag}" = "${no_v}" ]; then
-                        MATCHED_TAG="${tag}"
-                        break
-                      fi
-                    done
-                  else
-                    with_v="v${val}"
-                    for tag in "${ALL_TAGS[@]}"; do
-                      if [ "${tag}" = "${with_v}" ]; then
-                        MATCHED_TAG="${tag}"
-                        break
-                      fi
-                    done
-                  fi
-                fi
-                
-                if [ -n "${MATCHED_TAG}" ]; then
-                  # Check if already added
-                  ALREADY_ADDED=false
-                  for sel in "${SELECTED_TAGS[@]}"; do
-                    if [ "${sel}" = "${MATCHED_TAG}" ]; then
-                      ALREADY_ADDED=true
-                      break
-                    fi
-                  done
-                  if [ "${ALREADY_ADDED}" = false ]; then
-                    SELECTED_TAGS+=("${MATCHED_TAG}")
-                    echo "Selected (from input): ${MATCHED_TAG}"
-                  fi
-                else
-                  echo "Warning: Tag/version '${val}' (or its variations) does not exist in source repository, skipping"
-                fi
-              fi
-            done
-          else
-            # Priority 1: Add 'latest' if present
-            if [ "$HAS_LATEST" = true ]; then
-              SELECTED_TAGS+=("latest")
-              echo "Selected (priority 1): latest"
-            fi
-
-            # Priority 2: Add stable semver tags (newest first)
-            if [ "${#SELECTED_TAGS[@]}" -lt 5 ] && [ "${#STABLE_TAGS[@]}" -gt 0 ]; then
-              mapfile -t SORTED_STABLE < <(printf '%s\n' "${STABLE_TAGS[@]}" | sort -V -r)
-              for tag in "${SORTED_STABLE[@]}"; do
-                if [ "${#SELECTED_TAGS[@]}" -lt 5 ]; then
-                  SELECTED_TAGS+=("$tag")
-                  echo "Selected (priority 2): $tag"
-                fi
-              done
-            fi
-
-            # Priority 3: Add pre-release tags only if we still need more (newest first)
-            if [ "${#SELECTED_TAGS[@]}" -lt 5 ] && [ "${#PRERELEASE_TAGS[@]}" -gt 0 ]; then
-              mapfile -t SORTED_PRERELEASE < <(printf '%s\n' "${PRERELEASE_TAGS[@]}" | sort -V -r)
-              for tag in "${SORTED_PRERELEASE[@]}"; do
-                if [ "${#SELECTED_TAGS[@]}" -lt 5 ]; then
-                  SELECTED_TAGS+=("$tag")
-                  echo "Selected (priority 3): $tag"
-                fi
-              done
-            fi
-
-            # Priority 4: Fill remaining with other tags alphabetically
-            if [ "${#SELECTED_TAGS[@]}" -lt 5 ] && [ "${#OTHER_TAGS[@]}" -gt 0 ]; then
-              mapfile -t SORTED_OTHER < <(printf '%s\n' "${OTHER_TAGS[@]}" | sort)
-              for tag in "${SORTED_OTHER[@]}"; do
-                if [ "${#SELECTED_TAGS[@]}" -lt 5 ]; then
-                  SELECTED_TAGS+=("$tag")
-                  echo "Selected (priority 4): $tag"
-                fi
-              done
-            fi
-          fi
-
-          # Automatically find and append matching rolling major/minor tags (like v12 or 12.6) if they exist
-          DERIVED_TAGS=()
-          for tag in ${SELECTED_TAGS[@]+"${SELECTED_TAGS[@]}"}; do
-            if [[ "$tag" =~ ^(v?)([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-              prefix="${BASH_REMATCH[1]}"
-              major="${BASH_REMATCH[2]}"
-              minor="${BASH_REMATCH[3]}"
-              
-              candidates=(
-                "${prefix}${major}"
-                "${prefix}${major}.${minor}"
-              )
-              
-              if [ "$prefix" = "v" ]; then
-                candidates+=(
-                  "${major}"
-                  "${major}.${minor}"
-                )
-              else
-                candidates+=(
-                  "v${major}"
-                  "v${major}.${minor}"
-                )
-              fi
-              
-              for candidate in "${candidates[@]}"; do
-                for t in "${ALL_TAGS[@]}"; do
-                  if [ "$t" = "$candidate" ]; then
-                    ALREADY_SELECTED=false
-                    for s in ${SELECTED_TAGS[@]+"${SELECTED_TAGS[@]}"} ${DERIVED_TAGS[@]+"${DERIVED_TAGS[@]}"}; do
-                      if [ "$s" = "$candidate" ]; then
-                        ALREADY_SELECTED=true
-                        break
-                      fi
-                    done
-                    if [ "$ALREADY_SELECTED" = false ]; then
-                      DERIVED_TAGS+=("$candidate")
-                      echo "Automatically selected associated rolling tag: $candidate"
-                    fi
-                    break
-                  fi
-                done
-              done
-            fi
-          done
-          
-          if [ "${#DERIVED_TAGS[@]}" -gt 0 ]; then
-            SELECTED_TAGS+=("${DERIVED_TAGS[@]}")
-          fi
-
-          echo "Will mirror ${#SELECTED_TAGS[@]} tags: ${SELECTED_TAGS[*]}"
-
+          # A failed copy must not abort the remaining tags: one unreachable
+          # tag should not strand the rest of the image, and the summary is
+          # what makes a partial mirror visible afterwards.
+          failed=0
           for TAG in "${SELECTED_TAGS[@]}"; do
-            echo "Copying ${SOURCE_IMAGE}:${TAG} to ${DEST_IMAGE}:${TAG}"
+            if [ "${DRY_RUN}" = "true" ]; then
+              echo "| \`${TAG}\` | would copy |" >> "${GITHUB_STEP_SUMMARY}"
+              echo "DRY RUN: would copy ${SOURCE_IMAGE}:${TAG}"
+              continue
+            fi
+            echo "Copying ${SOURCE_IMAGE}:${TAG} -> ${DEST_IMAGE}:${TAG}"
             if skopeo copy \
               --multi-arch all \
               --retry-times 3 \
               "docker://${SOURCE_IMAGE}:${TAG}" \
               "docker://${DEST_IMAGE}:${TAG}"; then
-              echo "Success: ${DEST_IMAGE}:${TAG}"
+              echo "| \`${TAG}\` | copied |" >> "${GITHUB_STEP_SUMMARY}"
             else
+              failed=$((failed + 1))
+              echo "| \`${TAG}\` | **failed** |" >> "${GITHUB_STEP_SUMMARY}"
               echo "Failed: ${DEST_IMAGE}:${TAG}"
             fi
           done
 
-          echo "Completed processing: ${IMAGE_NAME}"
+          echo >> "${GITHUB_STEP_SUMMARY}"
+
+          if [ "${failed}" -gt 0 ]; then
+            echo "${failed} of ${#SELECTED_TAGS[@]} tag(s) failed to mirror for ${IMAGE_NAME}" >&2
+            exit 1
+          fi
         shell: bash
