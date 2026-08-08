@@ -119,5 +119,12 @@ check "empty input produces no output" \
 check "an image with only excluded tags produces no output" \
   "${FIXTURES}/excluded-only.txt" ""
 
+check "tags that match no category produce no output" \
+  "${FIXTURES}/no-match.txt" ""
+
+check "explicit versions matching nothing produce no output" \
+  "${FIXTURES}/no-match.txt" "" \
+  INPUT_VERSIONS="99.99.99"
+
 printf '\n%d checks, %d failures\n' "${checks}" "${failures}"
 [ "${failures}" -eq 0 ]

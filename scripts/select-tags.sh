@@ -130,7 +130,7 @@ if [ -n "${INPUT_VERSIONS:-}" ]; then
       echo "warning: requested tag '${value}' is not present in the source" >&2
     fi
   done
-  printf '%s\n' ${SELECTED[@]+"${SELECTED[@]}"}
+  [ "${#SELECTED[@]}" -gt 0 ] && printf '%s\n' "${SELECTED[@]}"
   exit 0
 fi
 
@@ -207,4 +207,4 @@ if [ "${MIRROR_MASTER}" = "true" ] && has_tag master; then
   select_tag master
 fi
 
-printf '%s\n' ${SELECTED[@]+"${SELECTED[@]}"}
+[ "${#SELECTED[@]}" -gt 0 ] && printf '%s\n' "${SELECTED[@]}"
