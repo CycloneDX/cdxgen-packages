@@ -1,0 +1,19 @@
+scripts/fixtures/no-match.txt
+  s_520f21f0f92174::t_d0bb0da76ad694 1-2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "130c69b4b3c4d37f1d1a636f5a38ef323b984a30",
+  "prompts": {},
+  "sessions": {
+    "s_520f21f0f92174": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01ea56568ffemCJdEb426tFBcM",
+        "model": "glm-5.2"
+      },
+      "human_author": "Prabhu Subramanian <prabhu@appthreat.com>"
+    }
+  }
+}
