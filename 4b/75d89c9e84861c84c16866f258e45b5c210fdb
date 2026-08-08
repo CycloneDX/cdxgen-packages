@@ -1,0 +1,22 @@
+scripts/select-tags.sh
+  s_520f21f0f92174::t_1a70c6adca12c2 133
+  s_520f21f0f92174::t_40bdaf287e744d 210
+scripts/test-select-tags.sh
+  s_520f21f0f92174::t_aa28cf983fe4ca 122-128
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4b75d89c9e84861c84c16866f258e45b5c210fdb",
+  "prompts": {},
+  "sessions": {
+    "s_520f21f0f92174": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01ea56568ffemCJdEb426tFBcM",
+        "model": "glm-5.2"
+      },
+      "human_author": "Prabhu Subramanian <prabhu@appthreat.com>"
+    }
+  }
+}
